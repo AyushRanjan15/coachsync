@@ -1,0 +1,18 @@
+{
+  "expo": {
+    "name": "CoachSync",
+    "slug": "coachsync",
+    "version": "1.0.0",
+    "scheme": "coachsync",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.coachsync.app"
+    },
+    "plugins": ["expo-router"],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

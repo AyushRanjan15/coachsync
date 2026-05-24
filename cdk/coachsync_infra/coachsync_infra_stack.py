@@ -4,6 +4,7 @@ from aws_cdk import (
     CfnOutput,
     aws_cognito as cognito,
     aws_s3 as s3,
+    aws_s3_notifications as s3n,
     aws_dynamodb as dynamodb,
     aws_lambda as lambda_,
     aws_apigatewayv2 as apigwv2,
@@ -128,11 +129,35 @@ class CoachsyncInfraStack(Stack):
             environment={
                 "VIDEOS_TABLE": resource_name(env_name, "videos"),
                 "COMMENTS_TABLE": resource_name(env_name, "comments"),
+                "VIDEOS_BUCKET": videos_bucket.bucket_name,
             },
         )
 
         videos_table.grant_read_write_data(api_fn)
         comments_table.grant_read_write_data(api_fn)
+        # Lambda signs presigned PUT URLs — it needs s3:PutObject on the bucket.
+        videos_bucket.grant_put(api_fn)
+
+        # ── Upload-Complete Lambda ──────────────────────────────────────────
+
+        upload_complete_fn = lambda_.Function(
+            self, "UploadCompleteFunction",
+            function_name=resource_name(env_name, "upload-complete"),
+            runtime=lambda_.Runtime.PYTHON_3_12,
+            handler="upload_complete.handler.handler",
+            code=lambda_.Code.from_asset(_BACKEND_PATH),
+            environment={
+                "VIDEOS_TABLE": resource_name(env_name, "videos"),
+            },
+        )
+
+        videos_table.grant_read_write_data(upload_complete_fn)
+
+        videos_bucket.add_event_notification(
+            s3.EventType.OBJECT_CREATED,
+            s3n.LambdaDestination(upload_complete_fn),
+            s3.NotificationKeyFilter(prefix="videos/"),
+        )
 
         # ── HTTP API ───────────────────────────────────────────────────────
         # Using L1 (Cfn*) constructs to avoid pinning alpha packages.
@@ -186,6 +211,15 @@ class CoachsyncInfraStack(Stack):
             self, "MeRoute",
             api_id=http_api.ref,
             route_key="GET /me",
+            authorization_type="JWT",
+            authorizer_id=jwt_authorizer.ref,
+            target=f"integrations/{api_integration.ref}",
+        )
+
+        apigwv2.CfnRoute(
+            self, "PostVideosRoute",
+            api_id=http_api.ref,
+            route_key="POST /videos",
             authorization_type="JWT",
             authorizer_id=jwt_authorizer.ref,
             target=f"integrations/{api_integration.ref}",

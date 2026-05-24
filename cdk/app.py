@@ -1,28 +1,25 @@
 #!/usr/bin/env python3
 import os
-
 import aws_cdk as cdk
 
 from coachsync_infra.coachsync_infra_stack import CoachsyncInfraStack
-
+from coachsync_infra.config import ENVIRONMENTS, get_env_name, standard_tags
 
 app = cdk.App()
-CoachsyncInfraStack(app, "CoachsyncInfra",
-    # If you don't specify 'env', this stack will be environment-agnostic.
-    # Account/Region-dependent features and context lookups will not work,
-    # but a single synthesized template can be deployed anywhere.
 
-    # Uncomment the next line to specialize this stack for the AWS Account
-    # and Region that are implied by the current CLI configuration.
+env_name = get_env_name(app.node)
+env_cfg = ENVIRONMENTS[env_name]
 
-    #env=cdk.Environment(account=os.getenv('CDK_DEFAULT_ACCOUNT'), region=os.getenv('CDK_DEFAULT_REGION')),
+stack = CoachsyncInfraStack(
+    app,
+    f"CoachsyncInfra-{env_name.capitalize()}",
+    env=cdk.Environment(
+        account=os.getenv("CDK_DEFAULT_ACCOUNT"),
+        region=env_cfg.region,
+    ),
+)
 
-    # Uncomment the next line if you know exactly what Account and Region you
-    # want to deploy the stack to. */
-
-    #env=cdk.Environment(account='123456789012', region='us-east-1'),
-
-    # For more information, see https://docs.aws.amazon.com/cdk/latest/guide/environments.html
-    )
+for key, value in standard_tags(env_name).items():
+    cdk.Tags.of(stack).add(key, value)
 
 app.synth()

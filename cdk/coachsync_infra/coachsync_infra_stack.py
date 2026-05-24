@@ -1,3 +1,4 @@
+import os
 from aws_cdk import (
     Stack,
     CfnOutput,
@@ -11,6 +12,11 @@ from aws_cdk import (
 from constructs import Construct
 
 from coachsync_infra.config import ENVIRONMENTS, get_env_name, resource_name
+
+# Resolved at synth time; stable regardless of working directory.
+_BACKEND_PATH = os.path.normpath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "backend")
+)
 
 
 class CoachsyncInfraStack(Stack):
@@ -111,19 +117,22 @@ class CoachsyncInfraStack(Stack):
             removal_policy=env_cfg.data_removal_policy,
         )
 
-        # ── Hello-World Lambda ─────────────────────────────────────────────
-        # Placeholder until real handlers are wired up in Phase 2.
+        # ── API Lambda (monolith) ──────────────────────────────────────────
 
-        hello_fn = lambda_.Function(
-            self, "HelloFunction",
-            function_name=resource_name(env_name, "hello"),
+        api_fn = lambda_.Function(
+            self, "ApiFunction",
+            function_name=resource_name(env_name, "api"),
             runtime=lambda_.Runtime.PYTHON_3_12,
-            handler="index.handler",
-            code=lambda_.Code.from_inline(
-                "def handler(event, context):\n"
-                "    return {'statusCode': 200, 'body': 'CoachSync API up'}\n"
-            ),
+            handler="api.handler.handler",
+            code=lambda_.Code.from_asset(_BACKEND_PATH),
+            environment={
+                "VIDEOS_TABLE": resource_name(env_name, "videos"),
+                "COMMENTS_TABLE": resource_name(env_name, "comments"),
+            },
         )
+
+        videos_table.grant_read_write_data(api_fn)
+        comments_table.grant_read_write_data(api_fn)
 
         # ── HTTP API ───────────────────────────────────────────────────────
         # Using L1 (Cfn*) constructs to avoid pinning alpha packages.
@@ -140,7 +149,7 @@ class CoachsyncInfraStack(Stack):
             ),
         )
 
-        # JWT authorizer — validates Cognito-issued tokens on every real route.
+        # JWT authorizer — validates Cognito-issued tokens on every protected route.
         issuer = (
             f"https://cognito-idp.{self.region}.amazonaws.com/{user_pool.user_pool_id}"
         )
@@ -156,22 +165,30 @@ class CoachsyncInfraStack(Stack):
             ),
         )
 
-        hello_integration = apigwv2.CfnIntegration(
-            self, "HelloIntegration",
+        api_integration = apigwv2.CfnIntegration(
+            self, "ApiIntegration",
             api_id=http_api.ref,
             integration_type="AWS_PROXY",
-            integration_uri=hello_fn.function_arn,
+            integration_uri=api_fn.function_arn,
             payload_format_version="2.0",
         )
 
-        # Unauthenticated health-check route — useful for smoke-testing the
-        # deployment without needing a Cognito token.
+        # Unauthenticated health-check — smoke test without needing a token.
         apigwv2.CfnRoute(
             self, "HealthRoute",
             api_id=http_api.ref,
             route_key="GET /",
             authorization_type="NONE",
-            target=f"integrations/{hello_integration.ref}",
+            target=f"integrations/{api_integration.ref}",
+        )
+
+        apigwv2.CfnRoute(
+            self, "MeRoute",
+            api_id=http_api.ref,
+            route_key="GET /me",
+            authorization_type="JWT",
+            authorizer_id=jwt_authorizer.ref,
+            target=f"integrations/{api_integration.ref}",
         )
 
         apigwv2.CfnStage(
@@ -181,7 +198,7 @@ class CoachsyncInfraStack(Stack):
             auto_deploy=True,
         )
 
-        hello_fn.add_permission(
+        api_fn.add_permission(
             "ApiGwInvoke",
             principal=iam.ServicePrincipal("apigateway.amazonaws.com"),
             source_arn=f"arn:aws:execute-api:{self.region}:{self.account}:{http_api.ref}/*/*",
@@ -194,6 +211,3 @@ class CoachsyncInfraStack(Stack):
         CfnOutput(self, "Region", value=self.region)
         CfnOutput(self, "ApiBaseUrl", value=http_api.attr_api_endpoint)
         CfnOutput(self, "VideosBucketName", value=videos_bucket.bucket_name)
-
-        # Suppress unused-variable warnings — tables are referenced in later phases.
-        _ = videos_table, comments_table, jwt_authorizer

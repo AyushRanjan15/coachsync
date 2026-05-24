@@ -2,6 +2,7 @@ import os
 from aws_cdk import (
     Stack,
     CfnOutput,
+    Duration,
     aws_cognito as cognito,
     aws_s3 as s3,
     aws_s3_notifications as s3n,
@@ -126,6 +127,7 @@ class CoachsyncInfraStack(Stack):
             runtime=lambda_.Runtime.PYTHON_3_12,
             handler="api.handler.handler",
             code=lambda_.Code.from_asset(_BACKEND_PATH),
+            timeout=Duration.seconds(30),
             environment={
                 "VIDEOS_TABLE": resource_name(env_name, "videos"),
                 "COMMENTS_TABLE": resource_name(env_name, "comments"),
@@ -146,6 +148,7 @@ class CoachsyncInfraStack(Stack):
             runtime=lambda_.Runtime.PYTHON_3_12,
             handler="upload_complete.handler.handler",
             code=lambda_.Code.from_asset(_BACKEND_PATH),
+            timeout=Duration.seconds(30),
             environment={
                 "VIDEOS_TABLE": resource_name(env_name, "videos"),
             },

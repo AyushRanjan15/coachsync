@@ -10,7 +10,10 @@
       "supportsTablet": false,
       "bundleIdentifier": "com.coachsync.app"
     },
-    "plugins": ["expo-router"],
+    "plugins": [
+      "expo-router",
+      "expo-video"
+    ],
     "experiments": {
       "typedRoutes": true
     }

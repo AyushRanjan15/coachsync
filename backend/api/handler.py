@@ -5,6 +5,8 @@ from api import videos as videos_mod
 _ROUTES = {
     "GET /me": me_mod.handle,
     "POST /videos": videos_mod.post_videos,
+    "GET /videos": videos_mod.get_videos,
+    "GET /videos/{videoId}": videos_mod.get_video,
 }
 
 _JSON = {"Content-Type": "application/json"}

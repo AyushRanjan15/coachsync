@@ -3,6 +3,8 @@ from aws_cdk import (
     Stack,
     CfnOutput,
     Duration,
+    BundlingOptions,
+    DockerImage,
     aws_cognito as cognito,
     aws_s3 as s3,
     aws_s3_notifications as s3n,
@@ -10,6 +12,9 @@ from aws_cdk import (
     aws_lambda as lambda_,
     aws_apigatewayv2 as apigwv2,
     aws_iam as iam,
+    aws_cloudfront as cloudfront,
+    aws_cloudfront_origins as origins,
+    aws_ssm as ssm,
 )
 from constructs import Construct
 
@@ -18,6 +23,10 @@ from coachsync_infra.config import ENVIRONMENTS, get_env_name, resource_name
 # Resolved at synth time; stable regardless of working directory.
 _BACKEND_PATH = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "..", "backend")
+)
+
+_KEYS_PATH = os.path.normpath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "cdk", "keys", "cf_public.pem")
 )
 
 
@@ -84,6 +93,30 @@ class CoachsyncInfraStack(Stack):
             ],
         )
 
+        # ── CloudFront Distribution ────────────────────────────────────────
+
+        cf_public_key = cloudfront.PublicKey(
+            self, "CfPublicKey",
+            public_key_name=resource_name(env_name, "cf-pub-key"),
+            encoded_key=open(_KEYS_PATH).read(),
+        )
+
+        cf_key_group = cloudfront.KeyGroup(
+            self, "CfKeyGroup",
+            key_group_name=resource_name(env_name, "cf-key-group"),
+            items=[cf_public_key],
+        )
+
+        distribution = cloudfront.Distribution(
+            self, "CfDistribution",
+            default_behavior=cloudfront.BehaviorOptions(
+                origin=origins.S3BucketOrigin.with_origin_access_control(videos_bucket),
+                trusted_key_groups=[cf_key_group],
+                viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                cache_policy=cloudfront.CachePolicy.CACHING_OPTIMIZED,
+            ),
+        )
+
         # ── DynamoDB Tables ────────────────────────────────────────────────
 
         videos_table = dynamodb.Table(
@@ -121,24 +154,41 @@ class CoachsyncInfraStack(Stack):
 
         # ── API Lambda (monolith) ──────────────────────────────────────────
 
+        _bundle = BundlingOptions(
+            image=DockerImage.from_registry("python:3.12"),
+            command=[
+                "bash", "-c",
+                "pip install -r requirements.txt -t /asset-output && cp -r . /asset-output",
+            ],
+        )
+
         api_fn = lambda_.Function(
             self, "ApiFunction",
             function_name=resource_name(env_name, "api"),
             runtime=lambda_.Runtime.PYTHON_3_12,
             handler="api.handler.handler",
-            code=lambda_.Code.from_asset(_BACKEND_PATH),
+            code=lambda_.Code.from_asset(_BACKEND_PATH, bundling=_bundle),
             timeout=Duration.seconds(30),
             environment={
                 "VIDEOS_TABLE": resource_name(env_name, "videos"),
                 "COMMENTS_TABLE": resource_name(env_name, "comments"),
                 "VIDEOS_BUCKET": videos_bucket.bucket_name,
+                "CLOUDFRONT_DOMAIN": distribution.distribution_domain_name,
+                "CF_KEY_PAIR_ID": cf_public_key.public_key_id,
+                "CF_PRIVATE_KEY_PARAM": f"/coachsync/{env_name}/cf-private-key",
             },
         )
 
         videos_table.grant_read_write_data(api_fn)
         comments_table.grant_read_write_data(api_fn)
-        # Lambda signs presigned PUT URLs — it needs s3:PutObject on the bucket.
         videos_bucket.grant_put(api_fn)
+
+        # Lambda needs to read the CloudFront private key from SSM to sign playback URLs.
+        cf_private_key_param = ssm.StringParameter.from_secure_string_parameter_attributes(
+            self, "CfPrivateKeyParam",
+            parameter_name=f"/coachsync/{env_name}/cf-private-key",
+        )
+        cf_private_key_param.grant_read(api_fn)
 
         # ── Upload-Complete Lambda ──────────────────────────────────────────
 
@@ -147,7 +197,7 @@ class CoachsyncInfraStack(Stack):
             function_name=resource_name(env_name, "upload-complete"),
             runtime=lambda_.Runtime.PYTHON_3_12,
             handler="upload_complete.handler.handler",
-            code=lambda_.Code.from_asset(_BACKEND_PATH),
+            code=lambda_.Code.from_asset(_BACKEND_PATH, bundling=_bundle),
             timeout=Duration.seconds(30),
             environment={
                 "VIDEOS_TABLE": resource_name(env_name, "videos"),
@@ -228,6 +278,24 @@ class CoachsyncInfraStack(Stack):
             target=f"integrations/{api_integration.ref}",
         )
 
+        apigwv2.CfnRoute(
+            self, "GetVideosRoute",
+            api_id=http_api.ref,
+            route_key="GET /videos",
+            authorization_type="JWT",
+            authorizer_id=jwt_authorizer.ref,
+            target=f"integrations/{api_integration.ref}",
+        )
+
+        apigwv2.CfnRoute(
+            self, "GetVideoRoute",
+            api_id=http_api.ref,
+            route_key="GET /videos/{videoId}",
+            authorization_type="JWT",
+            authorizer_id=jwt_authorizer.ref,
+            target=f"integrations/{api_integration.ref}",
+        )
+
         apigwv2.CfnStage(
             self, "DefaultStage",
             api_id=http_api.ref,
@@ -248,3 +316,4 @@ class CoachsyncInfraStack(Stack):
         CfnOutput(self, "Region", value=self.region)
         CfnOutput(self, "ApiBaseUrl", value=http_api.attr_api_endpoint)
         CfnOutput(self, "VideosBucketName", value=videos_bucket.bucket_name)
+        CfnOutput(self, "CloudFrontDomain", value=distribution.distribution_domain_name)

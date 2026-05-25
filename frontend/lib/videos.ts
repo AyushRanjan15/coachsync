@@ -1,10 +1,33 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import { api } from './api';
 
+export interface Video {
+  videoId: string;
+  userId: string;
+  exercise: string;
+  notes: string;
+  sessionDate: string;
+  uploadedAt: string;
+  uploaded: boolean;
+  s3Key: string;
+  contentType: string;
+  playbackUrl: string | null;
+  durationSec?: number;
+}
+
 export interface PostVideoResponse {
   videoId: string;
   uploadUrl: string;
   expiresIn: number;
+}
+
+export async function listVideos(): Promise<Video[]> {
+  const resp = await api.get<{ items: Video[] }>('/videos');
+  return resp.items;
+}
+
+export async function fetchVideo(videoId: string): Promise<Video> {
+  return api.get<Video>(`/videos/${videoId}`);
 }
 
 export async function createVideoRecord(params: {
